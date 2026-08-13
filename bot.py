@@ -19,6 +19,7 @@ from telegram.ext import (
     CallbackContext, Filters
 )
 
+# ---------- ENV ----------
 load_dotenv(override=False)
 
 def env(name, default=None, required=False):
@@ -40,14 +41,19 @@ PROXY_URL = env("PROXY_URL", "")
 DATA_FILE = env("DATA_FILE", "data.json")
 LOG_FILE = env("LOG_FILE", "bot.log")
 
+# ---------- LOGGING ----------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"), logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger("kwork_bot")
 
-def get_fernet():
+# ---------- ШИФРОВАНИЕ ----------
+def get_fernet() -> Fernet:
     key_source = hashlib.sha256(BOT_TOKEN.encode()).digest()
     key = base64.urlsafe_b64encode(key_source)
     return Fernet(key)
@@ -70,9 +76,10 @@ def decrypt_text(token: str) -> str:
 
 KWORK_PASSWORD_ENC = encrypt_text(KWORK_PASSWORD) if KWORK_PASSWORD else ""
 
-def get_kwork_password():
+def get_kwork_password() -> str:
     return decrypt_text(KWORK_PASSWORD_ENC)
 
+# ---------- ХРАНИЛИЩЕ ДАННЫХ ----------
 data_lock = threading.Lock()
 DEFAULT_DATA = {
     "keywords": [],
@@ -92,7 +99,7 @@ DEFAULT_DATA = {
     }
 }
 
-def load_data():
+def load_data() -> dict:
     if not os.path.exists(DATA_FILE):
         save_data(DEFAULT_DATA)
         return json.loads(json.dumps(DEFAULT_DATA))
@@ -103,10 +110,11 @@ def load_data():
             if k not in d:
                 d[k] = v
         return d
-    except Exception:
+    except Exception as e:
+        logger.error(f"Не удалось загрузить {DATA_FILE}: {e}")
         return json.loads(json.dumps(DEFAULT_DATA))
 
-def save_data(d):
+def save_data(d: dict) -> None:
     try:
         with data_lock:
             tmp = DATA_FILE + ".tmp"
@@ -114,20 +122,21 @@ def save_data(d):
                 json.dump(d, f, ensure_ascii=False, indent=2)
             os.replace(tmp, DATA_FILE)
     except Exception as e:
-        logger.error(f"Save failed: {e}")
+        logger.error(f"Не удалось сохранить данные: {e}")
 
 data = load_data()
 
+# ---------- ВСПОМОГАТЕЛЬНОЕ ----------
 def admin_only(func):
-    def wrapper(update, context, *args, **kwargs):
+    def wrapper(update: Update, context: CallbackContext, *args, **kwargs):
         user = update.effective_user
         if ADMIN_IDS and (not user or user.id not in ADMIN_IDS):
-            update.message.reply_text("⛔ Access denied.")
+            update.message.reply_text("⛔ У вас нет доступа к этой команде.")
             return
         return func(update, context, *args, **kwargs)
     return wrapper
 
-def in_work_hours():
+def in_work_hours() -> bool:
     try:
         sh, sm = map(int, WORK_START.split(":"))
         eh, em = map(int, WORK_END.split(":"))
@@ -139,111 +148,116 @@ def in_work_hours():
     except Exception:
         return True
 
-def cmd_start(update, context):
+# ---------- КОМАНДЫ ----------
+def cmd_start(update: Update, context: CallbackContext):
     update.message.reply_text(
-        "👋 Bot started.\n\n"
-        "/add <word> – add keyword\n"
-        "/remove <word> – remove keyword\n"
-        "/list – list keywords\n"
-        "/clear – clear all\n"
-        "/check – check Kwork now\n"
-        "/pause – pause monitoring\n"
-        "/resume – resume monitoring\n"
-        "/set_template <text> – set response template\n"
-        "/stats – statistics"
+        "👋 Бот запущен.\n\n"
+        "Команды:\n"
+        "/add <слово> — добавить ключевое слово\n"
+        "/remove <слово> — удалить ключевое слово\n"
+        "/list — список ключевых слов\n"
+        "/clear — очистить список\n"
+        "/check — проверить Kwork сейчас\n"
+        "/pause — приостановить мониторинг\n"
+        "/resume — возобновить мониторинг\n"
+        "/set_template <текст> — задать шаблон отклика\n"
+        "/stats — статистика"
     )
 
 @admin_only
-def cmd_add(update, context):
+def cmd_add(update: Update, context: CallbackContext):
     if not context.args:
-        update.message.reply_text("Usage: /add <keyword>")
+        update.message.reply_text("Использование: /add <ключевое слово>")
         return
     kw = " ".join(context.args).strip().lower()
     if kw in data["keywords"]:
-        update.message.reply_text("Already tracking.")
+        update.message.reply_text("Это слово уже отслеживается.")
         return
     data["keywords"].append(kw)
     save_data(data)
-    update.message.reply_text(f"✅ Added: {kw}")
+    update.message.reply_text(f"✅ Добавлено ключевое слово: {kw}")
 
 @admin_only
-def cmd_remove(update, context):
+def cmd_remove(update: Update, context: CallbackContext):
     if not context.args:
-        update.message.reply_text("Usage: /remove <keyword>")
+        update.message.reply_text("Использование: /remove <ключевое слово>")
         return
     kw = " ".join(context.args).strip().lower()
     if kw not in data["keywords"]:
-        update.message.reply_text("Not found.")
+        update.message.reply_text("Такого слова нет в списке.")
         return
     data["keywords"].remove(kw)
     save_data(data)
-    update.message.reply_text(f"🗑 Removed: {kw}")
+    update.message.reply_text(f"🗑 Удалено ключевое слово: {kw}")
 
 @admin_only
-def cmd_list(update, context):
+def cmd_list(update: Update, context: CallbackContext):
     if not data["keywords"]:
-        update.message.reply_text("No keywords.")
+        update.message.reply_text("Список ключевых слов пуст.")
         return
-    update.message.reply_text("📋 Keywords:\n" + "\n".join(f"• {k}" for k in data["keywords"]))
+    update.message.reply_text("📋 Ключевые слова:\n" + "\n".join(f"• {k}" for k in data["keywords"]))
 
 @admin_only
-def cmd_clear(update, context):
+def cmd_clear(update: Update, context: CallbackContext):
     data["keywords"] = []
     save_data(data)
-    update.message.reply_text("🧹 Cleared all keywords.")
+    update.message.reply_text("🧹 Список ключевых слов очищен.")
 
 @admin_only
-def cmd_pause(update, context):
+def cmd_pause(update: Update, context: CallbackContext):
     data["paused"] = True
     save_data(data)
-    update.message.reply_text("⏸ Monitoring paused.")
+    update.message.reply_text("⏸ Мониторинг приостановлен.")
 
 @admin_only
-def cmd_resume(update, context):
+def cmd_resume(update: Update, context: CallbackContext):
     data["paused"] = False
     save_data(data)
-    update.message.reply_text("▶️ Monitoring resumed.")
+    update.message.reply_text("▶️ Мониторинг возобновлён.")
 
 @admin_only
-def cmd_set_template(update, context):
+def cmd_set_template(update: Update, context: CallbackContext):
     if not context.args:
         update.message.reply_text(
-            "Usage: /set_template <template>\n"
-            "Placeholders: {title} {keyword} {price} {link}\n"
-            f"Current template:\n{data['template']}"
+            "Использование: /set_template <шаблон>\n"
+            "Доступные плейсхолдеры: {title} {keyword} {price} {link}\n\n"
+            f"Текущий шаблон:\n{data['template']}"
         )
         return
     new_template = update.message.text.split(" ", 1)[1]
     data["template"] = new_template
     save_data(data)
-    update.message.reply_text("✅ Template updated.")
+    update.message.reply_text("✅ Шаблон обновлён.")
 
 @admin_only
-def cmd_stats(update, context):
+def cmd_stats(update: Update, context: CallbackContext):
     s = data["stats"]
-    update.message.reply_text(
-        f"📊 Stats:\n"
-        f"Scanned messages: {s['messages_scanned']}\n"
-        f"Chat matches: {s['chat_matches']}\n"
-        f"Kwork found: {s['kwork_found']}\n"
-        f"Responses generated: {s['responses_generated']}\n"
-        f"Kwork checks: {s['kwork_checks']}\n"
-        f"Started: {s['started_at']}\n"
-        f"Status: {'⏸ paused' if data['paused'] else '▶️ active'}\n"
-        f"Keywords: {len(data['keywords'])}"
+    text = (
+        "📊 Статистика:\n"
+        f"Просканировано сообщений в чатах: {s['messages_scanned']}\n"
+        f"Совпадений в чатах: {s['chat_matches']}\n"
+        f"Найдено заказов Kwork: {s['kwork_found']}\n"
+        f"Сгенерировано откликов: {s['responses_generated']}\n"
+        f"Проверок Kwork выполнено: {s['kwork_checks']}\n"
+        f"Запущен: {s['started_at']}\n"
+        f"Статус: {'⏸ пауза' if data['paused'] else '▶️ активен'}\n"
+        f"Ключевых слов: {len(data['keywords'])}"
     )
+    update.message.reply_text(text)
 
 @admin_only
-def cmd_check(update, context):
-    update.message.reply_text("🔍 Checking Kwork...")
+def cmd_check(update: Update, context: CallbackContext):
+    update.message.reply_text("🔍 Запускаю проверку Kwork...")
     threading.Thread(target=kwork_check_job, args=(context,), daemon=True).start()
 
-def handle_message(update, context):
+# ---------- МОНИТОРИНГ ЧАТОВ ----------
+def handle_message(update: Update, context: CallbackContext):
     if data["paused"]:
         return
     msg = update.effective_message
     if not msg or not msg.text:
         return
+
     data["stats"]["messages_scanned"] += 1
     text_lower = msg.text.lower()
     matched = [kw for kw in data["keywords"] if kw in text_lower]
@@ -251,28 +265,31 @@ def handle_message(update, context):
         if data["stats"]["messages_scanned"] % 50 == 0:
             save_data(data)
         return
+
     data["stats"]["chat_matches"] += 1
     save_data(data)
+
     kw = matched[0]
     chat_title = update.effective_chat.title or update.effective_chat.username or str(update.effective_chat.id)
     ctx_id = f"chat:{update.effective_chat.id}:{msg.message_id}"
     context.bot_data.setdefault("contexts", {})[ctx_id] = {
         "keyword": kw, "title": chat_title, "price": "", "link": ""
     }
+
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("✍️ Generate response", callback_data=f"gen:{ctx_id}")]]
+        [[InlineKeyboardButton("✍️ Сгенерировать отклик", callback_data=f"gen:{ctx_id}")]]
     )
     target = NOTIFY_CHAT_ID or update.effective_chat.id
     try:
         context.bot.send_message(
             chat_id=target,
-            text=f"🔔 Keyword «{kw}» in chat «{chat_title}»:\n\n{msg.text[:1000]}",
+            text=f"🔔 Найдено ключевое слово «{kw}» в чате «{chat_title}»:\n\n{msg.text[:1000]}",
             reply_markup=keyboard
         )
     except Exception as e:
-        logger.error(f"Notify failed: {e}")
+        logger.error(f"Не удалось отправить уведомление о чате: {e}")
 
-def callback_handler(update, context):
+def callback_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
     if not query.data or not query.data.startswith("gen:"):
@@ -280,7 +297,7 @@ def callback_handler(update, context):
     ctx_id = query.data[len("gen:"):]
     ctx = context.bot_data.get("contexts", {}).get(ctx_id)
     if not ctx:
-        query.message.reply_text("⚠️ Context expired.")
+        query.message.reply_text("⚠️ Контекст этого уведомления устарел или недоступен.")
         return
     try:
         response_text = data["template"].format(
@@ -289,15 +306,18 @@ def callback_handler(update, context):
             price=ctx.get("price", ""),
             link=ctx.get("link", "")
         )
-    except Exception:
+    except Exception as e:
+        logger.error(f"Ошибка форматирования шаблона: {e}")
         response_text = data["template"]
+
     data["stats"]["responses_generated"] += 1
     save_data(data)
-    query.message.reply_text(f"📝 Generated response:\n\n{response_text}")
+    query.message.reply_text(f"📝 Сгенерированный отклик:\n\n{response_text}")
 
+# ---------- ПАРСИНГ KWORK С АВТОРИЗАЦИЕЙ ----------
 KWORK_SEARCH_URL = "https://kwork.ru/projects"
 
-def get_requests_session():
+def get_requests_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -306,7 +326,36 @@ def get_requests_session():
         session.proxies.update({"http": PROXY_URL, "https": PROXY_URL})
     return session
 
-def parse_price(text):
+def login_kwork(session: requests.Session) -> bool:
+    """
+    Выполняет авторизацию на Kwork, используя переменные окружения KWORK_LOGIN и KWORK_PASSWORD.
+    Возвращает True при успехе.
+    """
+    login = KWORK_LOGIN
+    password = get_kwork_password()
+    if not login or not password:
+        logger.warning("Логин или пароль Kwork не заданы — авторизация пропущена (будут видны только публичные заказы).")
+        return False
+
+    try:
+        resp = session.post(
+            "https://kwork.ru/login",
+            data={"login": login, "password": password, "remember": "1"},
+            timeout=15
+        )
+        resp.raise_for_status()
+        # Проверяем, что переадресовало на главную или нет ошибки
+        if "logout" in resp.text.lower() or resp.url.endswith("/"):
+            logger.info("✅ Авторизация Kwork успешна")
+            return True
+        else:
+            logger.error("❌ Авторизация Kwork не удалась (проверьте логин/пароль)")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка при авторизации Kwork: {e}")
+        return False
+
+def parse_price(text: str) -> Optional[float]:
     if not text:
         return None
     digits = re.sub(r"[^\d]", "", text)
@@ -317,14 +366,19 @@ def parse_price(text):
     except ValueError:
         return None
 
-def search_kwork(keyword, session):
+def search_kwork(keyword: str, session: requests.Session) -> list:
+    """
+    Возвращает список заказов по ключевому слову.
+    Для получения новых заказов нужна авторизация.
+    """
     results = []
     try:
         resp = session.get(KWORK_SEARCH_URL, params={"a": 1, "keyword": keyword}, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as e:
-        logger.warning(f"Kwork request error for '{keyword}': {e}")
+        logger.warning(f"Ошибка запроса к Kwork по слову '{keyword}': {e}")
         return results
+
     try:
         soup = BeautifulSoup(resp.text, "html.parser")
         cards = soup.select("div.want-card, div[class*='project-card'], article")
@@ -339,23 +393,31 @@ def search_kwork(keyword, session):
                 price_tag = card.select_one("[class*='price']")
                 price = parse_price(price_tag.get_text(strip=True)) if price_tag else None
                 results.append({"title": title, "link": link, "price": price})
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Пропущена некорректная карточка Kwork: {e}")
                 continue
     except Exception as e:
-        logger.error(f"Parse error: {e}")
+        logger.error(f"Не удалось разобрать ответ Kwork по слову '{keyword}': {e}")
+
     return results
 
-def kwork_check_job(context):
+def kwork_check_job(context: CallbackContext):
     if data["paused"] or not in_work_hours():
         return
+
     session = get_requests_session()
+    # Пытаемся авторизоваться перед каждым циклом проверки
+    login_kwork(session)
+
     data["stats"]["kwork_checks"] += 1
+
     for kw in list(data["keywords"]):
         try:
             orders = search_kwork(kw, session)
         except Exception as e:
-            logger.error(f"Search error for '{kw}': {e}")
+            logger.error(f"Необработанная ошибка при поиске по '{kw}': {e}")
             continue
+
         for order in orders:
             link = order["link"]
             if link in data["seen_kwork_links"]:
@@ -363,17 +425,20 @@ def kwork_check_job(context):
             price = order.get("price")
             if price is not None and MIN_PRICE and price < MIN_PRICE:
                 continue
+
             data["seen_kwork_links"].append(link)
             if len(data["seen_kwork_links"]) > 2000:
                 data["seen_kwork_links"] = data["seen_kwork_links"][-1000:]
             data["stats"]["kwork_found"] += 1
             send_kwork_notification(context, kw, order)
+
     save_data(data)
 
-def send_kwork_notification(context, keyword, order):
+def send_kwork_notification(context: CallbackContext, keyword: str, order: dict):
     if not NOTIFY_CHAT_ID:
-        logger.warning("NOTIFY_CHAT_ID not set")
+        logger.warning("NOTIFY_CHAT_ID не задан — уведомление о заказе Kwork не отправлено")
         return
+
     ctx_id = f"kwork:{abs(hash(order['link']))}"
     context.bot_data.setdefault("contexts", {})[ctx_id] = {
         "keyword": keyword,
@@ -381,27 +446,30 @@ def send_kwork_notification(context, keyword, order):
         "price": order.get("price") or "",
         "link": order["link"]
     }
+
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✍️ Generate response", callback_data=f"gen:{ctx_id}")],
-        [InlineKeyboardButton("🔗 Open order", url=order["link"])]
+        [InlineKeyboardButton("✍️ Сгенерировать отклик", callback_data=f"gen:{ctx_id}")],
+        [InlineKeyboardButton("🔗 Открыть заказ", url=order["link"])]
     ])
     text = (
-        f"💼 New Kwork order for «{keyword}»\n\n"
+        f"💼 Новый заказ на Kwork по слову «{keyword}»\n\n"
         f"{order['title']}\n"
-        f"Price: {order.get('price') or 'not specified'}"
+        f"Цена: {order.get('price') or 'не указана'}"
     )
     try:
         context.bot.send_message(chat_id=NOTIFY_CHAT_ID, text=text, reply_markup=keyboard)
     except Exception as e:
-        logger.error(f"Kwork notification failed: {e}")
+        logger.error(f"Не удалось отправить уведомление о заказе Kwork: {e}")
 
-def error_handler(update, context):
-    logger.error(f"Update {update} caused error: {context.error}")
+# ---------- ЗАПУСК ----------
+def error_handler(update: object, context: CallbackContext):
+    logger.error(f"Update {update} вызвал ошибку: {context.error}")
 
 def main():
     updater = Updater(token=BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
     dp.bot_data["contexts"] = {}
+
     dp.add_handler(CommandHandler("start", cmd_start))
     dp.add_handler(CommandHandler("add", cmd_add))
     dp.add_handler(CommandHandler("remove", cmd_remove))
@@ -415,8 +483,10 @@ def main():
     dp.add_handler(CallbackQueryHandler(callback_handler))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     dp.add_error_handler(error_handler)
+
     updater.job_queue.run_repeating(kwork_check_job, interval=KWORK_CHECK_INTERVAL, first=10)
-    logger.info("Bot started")
+
+    logger.info("Бот запущен")
     updater.start_polling(drop_pending_updates=True)
     updater.idle()
 
